@@ -192,17 +192,6 @@ ctxd doctor
 
 Doctor checks the resolved binary path, `serve --mcp`, graph tables, project graph data, MCP config files, local instruction policies, global Claude/Codex instruction files, and Claude CLI availability.
 
-## Releasing
-
-Releases are built by GoReleaser when a version tag is pushed:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The GitHub Actions workflow publishes macOS, Linux, and Windows archives plus `checksums.txt`.
-
 ## License
 
 ctxd is open source under the GNU Affero General Public License v3.0.
