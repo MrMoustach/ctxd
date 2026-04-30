@@ -34,6 +34,10 @@ archives:
           - zip
     name_template: >-
       {{ .ProjectName }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+      - COMMERCIAL.md
 
 checksum:
   name_template: checksums.txt

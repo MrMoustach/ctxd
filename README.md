@@ -190,6 +190,8 @@ args = ["serve", "--mcp"]
 ctxd doctor
 ```
 
+Doctor checks the resolved binary path, `serve --mcp`, graph tables, project graph data, MCP config files, local instruction policies, global Claude/Codex instruction files, and Claude CLI availability.
+
 ## Releasing
 
 Releases are built by GoReleaser when a version tag is pushed:
@@ -201,7 +203,16 @@ git push origin v0.1.0
 
 The GitHub Actions workflow publishes macOS, Linux, and Windows archives plus `checksums.txt`.
 
-Doctor checks the resolved binary path, `serve --mcp`, graph tables, project graph data, MCP config files, local instruction policies, global Claude/Codex instruction files, and Claude CLI availability.
+## License
+
+ctxd is open source under the GNU Affero General Public License v3.0.
+
+Copyright (C) 2026 Issam Harchi.
+
+Commercial licenses are available for organizations that need different terms,
+including proprietary redistribution, private modifications, hosted use without
+AGPL source-disclosure obligations, or custom support and warranty terms. See
+`COMMERCIAL.md`.
 
 ## Ignored By Default
 
