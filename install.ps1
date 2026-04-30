@@ -10,11 +10,26 @@ function Fail($Message) {
 }
 
 function Get-Arch {
-    switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()) {
-        "x64" { "x86_64"; break }
-        "arm64" { "arm64"; break }
-        default { Fail "unsupported architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+    $arch = $null
+
+    try {
+        $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+        if ($arch) {
+            Write-Host "Detected architecture: $arch"
+            switch ($arch.ToString().ToLowerInvariant()) {
+                "x64" { return "x86_64" }
+                "arm64" { return "arm64" }
+            }
+        }
+    } catch {}
+
+    if ([Environment]::Is64BitOperatingSystem) {
+        Write-Host "Detected architecture: x86_64"
+        return "x86_64"
     }
+
+    Write-Host "Detected architecture: $arch"
+    Fail "unsupported architecture"
 }
 
 function Get-LatestTag {
