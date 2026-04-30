@@ -66,6 +66,7 @@ type Stats struct {
 	NodesByType  map[string]int `json:"nodes_by_type"`
 	EdgesByType  map[string]int `json:"edges_by_type"`
 	HasGraphData bool           `json:"has_graph_data"`
+	GraphBuiltAt string         `json:"graph_built_at,omitempty"`
 	TopFiles     []Connected    `json:"top_files,omitempty"`
 	TopSymbols   []Connected    `json:"top_symbols,omitempty"`
 	OrphanFiles  []string       `json:"orphan_files,omitempty"`

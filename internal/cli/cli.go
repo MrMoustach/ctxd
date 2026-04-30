@@ -113,15 +113,16 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	case "index":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: ctx index PROJECT")
-		}
 		st, err := open()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		p, err := st.ProjectByName(ctx, args[1])
+		projectArg := ""
+		if len(args) >= 2 {
+			projectArg = args[1]
+		}
+		p, err := resolveProject(ctx, st, projectArg)
 		if err != nil {
 			return err
 		}
@@ -129,7 +130,14 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		if err == nil {
 			fmt.Fprintf(stdout, "indexed %d files, %d chunks\n", r.IndexedFiles, r.IndexedChunks)
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		gs, gErr := graph.Rebuild(ctx, st, p)
+		if gErr == nil {
+			fmt.Fprintf(stdout, "built graph: %d symbols, %d edges\n", gs.Symbols, gs.Edges)
+		}
+		return gErr
 	case "search":
 		fs := flag.NewFlagSet("search", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -143,19 +151,25 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if fs.NArg() < 2 {
-			return fmt.Errorf("usage: ctx search PROJECT QUERY")
+		if fs.NArg() < 1 {
+			return fmt.Errorf("usage: ctx search [PROJECT] QUERY")
 		}
 		st, err := open()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		p, err := st.ProjectByName(ctx, fs.Arg(0))
+		var projectArg, query string
+		if fs.NArg() == 1 {
+			query = fs.Arg(0)
+		} else {
+			projectArg = fs.Arg(0)
+			query = fs.Arg(1)
+		}
+		p, err := resolveProject(ctx, st, projectArg)
 		if err != nil {
 			return err
 		}
-		query := fs.Arg(1)
 		rs, err := search.Search(ctx, st, p, query, *limit)
 		if err != nil {
 			return err
@@ -215,31 +229,38 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if fs.NArg() < 2 {
-			return fmt.Errorf("usage: ctx expand PROJECT FILE [--around SYMBOL] [--lines N]")
+		if fs.NArg() < 1 {
+			return fmt.Errorf("usage: ctx expand [PROJECT] FILE [--around SYMBOL] [--lines N]")
 		}
 		st, err := open()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		p, err := st.ProjectByName(ctx, fs.Arg(0))
+		var expandProjectArg, expandFile string
+		if fs.NArg() == 1 {
+			expandFile = fs.Arg(0)
+		} else {
+			expandProjectArg = fs.Arg(0)
+			expandFile = fs.Arg(1)
+		}
+		p, err := resolveProject(ctx, st, expandProjectArg)
 		if err != nil {
 			return err
 		}
-		content, err := st.FileContent(ctx, p, fs.Arg(1))
+		content, err := st.FileContent(ctx, p, expandFile)
 		if err != nil {
 			return err
 		}
 		snippet, startLine := expandSnippet(content, *around, *lines)
 		if *asJSON {
 			return json.NewEncoder(stdout).Encode(map[string]any{
-				"path":       fs.Arg(1),
+				"path":       expandFile,
 				"start_line": startLine,
 				"snippet":    snippet,
 			})
 		}
-		fmt.Fprintf(stdout, "%s:%d\n\n%s\n", fs.Arg(1), startLine, snippet)
+		fmt.Fprintf(stdout, "%s:%d\n\n%s\n", expandFile, startLine, snippet)
 		return nil
 	case "context":
 		fs := flag.NewFlagSet("context", flag.ContinueOnError)
@@ -251,20 +272,27 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		if fs.NArg() < 2 {
-			return fmt.Errorf("usage: ctx context PROJECT TASK --max-tokens 12000")
+		if fs.NArg() < 1 {
+			return fmt.Errorf("usage: ctx context [PROJECT] TASK --max-tokens 12000")
 		}
 		st, err := open()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		p, err := st.ProjectByName(ctx, fs.Arg(0))
+		var ctxProjectArg, task string
+		if fs.NArg() == 1 {
+			task = fs.Arg(0)
+		} else {
+			ctxProjectArg = fs.Arg(0)
+			task = fs.Arg(1)
+		}
+		p, err := resolveProject(ctx, st, ctxProjectArg)
 		if err != nil {
 			return err
 		}
 		graphEnabled := *useGraph || graph.HasGraphData(ctx, st, p.ID)
-		md, _, err := contextpack.BuildWithOptions(ctx, st, p, fs.Arg(1), contextpack.Options{MaxTokens: *maxTokens, Graph: graphEnabled, GraphDepth: *graphDepth})
+		md, _, err := contextpack.BuildWithOptions(ctx, st, p, task, contextpack.Options{MaxTokens: *maxTokens, Graph: graphEnabled, GraphDepth: *graphDepth})
 		if err != nil {
 			return err
 		}
@@ -377,6 +405,34 @@ func runInteractive(stdout, stderr io.Writer) error {
 	return Run(args, stdout, stderr)
 }
 
+// resolveProject resolves a project from a name, path, or CWD (when arg is empty).
+// If arg looks like a path (absolute, relative, or "."), it resolves by path.
+// Otherwise it resolves by name.
+func resolveProject(ctx context.Context, st *store.Store, arg string) (store.Project, error) {
+	if isPathArg(arg) {
+		abs := arg
+		if arg == "" {
+			var err error
+			abs, err = os.Getwd()
+			if err != nil {
+				return store.Project{}, err
+			}
+		} else {
+			var err error
+			abs, err = filepath.Abs(arg)
+			if err != nil {
+				return store.Project{}, err
+			}
+		}
+		return st.ProjectByPath(ctx, abs)
+	}
+	return st.ProjectByName(ctx, arg)
+}
+
+func isPathArg(s string) bool {
+	return s == "" || s == "." || strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../")
+}
+
 func open() (*store.Store, error) {
 	db, err := config.DefaultDBPath()
 	if err != nil {
@@ -432,7 +488,14 @@ func runSetup(ctx context.Context, stdout io.Writer, path, name string, agents [
 	}
 	fmt.Fprintf(stdout, "indexed %d files, %d chunks\n", r.IndexedFiles, r.IndexedChunks)
 
-	// Step 4: install agents
+	// Step 4: build graph
+	gs, gErr := graph.Rebuild(ctx, st, p)
+	if gErr != nil {
+		return fmt.Errorf("graph: %w", gErr)
+	}
+	fmt.Fprintf(stdout, "built graph: %d symbols, %d edges\n", gs.Symbols, gs.Edges)
+
+	// Step 5: install agents
 	if len(agents) > 0 {
 		binPath, err := resolvedBinary()
 		if err != nil {

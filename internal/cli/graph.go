@@ -12,8 +12,8 @@ import (
 )
 
 func runGraph(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: ctxd graph <build|report|export|neighbors|path|stats> PROJECT")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: ctxd graph <build|report|export|neighbors|path|stats> [PROJECT]")
 	}
 	cmd := args[0]
 	st, err := open()
@@ -21,10 +21,19 @@ func runGraph(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return err
 	}
 	defer st.Close()
-	project, err := st.ProjectByName(ctx, args[1])
+
+	// args[1] is optional project (name or path); if missing, resolve from CWD.
+	projectArg := ""
+	extraArgs := args[1:]
+	if len(args) >= 2 {
+		projectArg = args[1]
+		extraArgs = args[2:]
+	}
+	project, err := resolveProject(ctx, st, projectArg)
 	if err != nil {
 		return err
 	}
+
 	switch cmd {
 	case "build":
 		stats, err := graph.Rebuild(ctx, st, project)
@@ -42,7 +51,7 @@ func runGraph(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fs := flag.NewFlagSet("graph export", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		format := fs.String("format", "json", "json|html")
-		if err := fs.Parse(args[2:]); err != nil {
+		if err := fs.Parse(extraArgs); err != nil {
 			return err
 		}
 		var path string
@@ -62,11 +71,11 @@ func runGraph(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fs.SetOutput(stderr)
 		depth := fs.Int("depth", 1, "neighbor depth")
 		asJSON := fs.Bool("json", false, "json output")
-		if err := fs.Parse(args[2:]); err != nil {
+		if err := fs.Parse(extraArgs); err != nil {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return fmt.Errorf("usage: ctxd graph neighbors PROJECT SYMBOL_OR_FILE")
+			return fmt.Errorf("usage: ctxd graph neighbors [PROJECT] SYMBOL_OR_FILE")
 		}
 		nodes, edges, err := graph.Neighbors(ctx, st, project, fs.Arg(0), *depth)
 		if err != nil {
@@ -78,13 +87,13 @@ func runGraph(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return printNodes(stdout, nodes, edges)
 	case "path":
 		asJSON := false
-		if len(args) > 4 && args[4] == "--json" {
+		if len(extraArgs) > 2 && extraArgs[2] == "--json" {
 			asJSON = true
 		}
-		if len(args) < 4 {
-			return fmt.Errorf("usage: ctxd graph path PROJECT FROM TO")
+		if len(extraArgs) < 2 {
+			return fmt.Errorf("usage: ctxd graph path [PROJECT] FROM TO")
 		}
-		nodes, edges, err := graph.Path(ctx, st, project, args[2], args[3])
+		nodes, edges, err := graph.Path(ctx, st, project, extraArgs[0], extraArgs[1])
 		if err != nil {
 			return err
 		}
@@ -100,7 +109,7 @@ func runGraph(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		fmt.Fprintln(stdout)
 		return nil
 	case "stats":
-		asJSON := len(args) > 2 && args[2] == "--json"
+		asJSON := len(extraArgs) > 0 && extraArgs[0] == "--json"
 		stats, err := graph.ProjectStats(ctx, st, project)
 		if err != nil {
 			return err

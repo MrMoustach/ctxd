@@ -100,7 +100,12 @@ func Rebuild(ctx context.Context, st *store.Store, project store.Project) (Stats
 			}
 		}
 	}
-	return ProjectStats(ctx, st, project)
+	stats, err := ProjectStats(ctx, st, project)
+	if err != nil {
+		return stats, err
+	}
+	_ = st.SetGraphBuiltAt(ctx, project.ID, time.Now())
+	return stats, nil
 }
 
 func HasGraphData(ctx context.Context, st *store.Store, projectID int64) bool {

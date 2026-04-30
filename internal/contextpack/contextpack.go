@@ -47,6 +47,9 @@ func BuildWithOptions(ctx context.Context, st *store.Store, project store.Projec
 		return true
 	}
 	add(fmt.Sprintf("# ctxd Context Pack\n\n## Task\n%s\n\n## Project\n%s\n\n## Summary\nRelevant files were selected from local FTS matches, symbol matches, and graph relationships when available.\n\n", task, project.Name))
+	if warn := graphStalenessWarning(ctx, st, project); warn != "" {
+		add(warn)
+	}
 	add("## Direct Matches\n\n")
 	seen := map[string]bool{}
 	var matchedPaths []string
@@ -146,4 +149,19 @@ func firstLines(s string, max int) string {
 		lines = lines[:max]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func graphStalenessWarning(ctx context.Context, st *store.Store, project store.Project) string {
+	if project.GraphBuiltAt == "" {
+		return "> **WARNING: Graph not built.** Call `ctxd_graph_rebuild` then `reindex_project` before implementation work.\n\n"
+	}
+	var changed int
+	_ = st.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM files WHERE project_id=? AND mtime > ?`,
+		project.ID, project.GraphBuiltAt,
+	).Scan(&changed)
+	if changed > 0 {
+		return fmt.Sprintf("> **WARNING: Graph is stale** (%d file(s) modified since last build). Call `ctxd_graph_rebuild` then `reindex_project` before implementation work.\n\n", changed)
+	}
+	return ""
 }

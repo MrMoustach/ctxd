@@ -73,6 +73,7 @@ func ProjectStats(ctx context.Context, st *store.Store, project store.Project) (
 	stats.Jobs, _ = nodesByType(ctx, st, project.ID, "job", 50)
 	stats.Commands, _ = nodesByType(ctx, st, project.ID, "command", 50)
 	stats.Tests, _ = nodesByType(ctx, st, project.ID, "test", 50)
+	stats.GraphBuiltAt = project.GraphBuiltAt
 	return stats, nil
 }
 

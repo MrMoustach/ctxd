@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -15,11 +16,12 @@ import (
 type Store struct{ DB *sql.DB }
 
 type Project struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	RootPath  string `json:"root_path"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	RootPath     string `json:"root_path"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	GraphBuiltAt string `json:"graph_built_at,omitempty"`
 }
 
 type FileRecord struct {
@@ -96,6 +98,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	// Best-effort schema upgrades for existing databases.
+	_, _ = s.DB.ExecContext(ctx, `ALTER TABLE projects ADD COLUMN graph_built_at TEXT`)
 	return nil
 }
 
@@ -118,7 +122,7 @@ func (s *Store) AddProject(ctx context.Context, name, root string) (Project, err
 }
 
 func (s *Store) Projects(ctx context.Context) ([]Project, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,root_path,created_at,updated_at FROM projects ORDER BY name`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,root_path,created_at,updated_at,COALESCE(graph_built_at,'') FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +130,7 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 	var out []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.RootPath, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.RootPath, &p.CreatedAt, &p.UpdatedAt, &p.GraphBuiltAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -136,11 +140,37 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 
 func (s *Store) ProjectByName(ctx context.Context, name string) (Project, error) {
 	var p Project
-	err := s.DB.QueryRowContext(ctx, `SELECT id,name,root_path,created_at,updated_at FROM projects WHERE name=?`, name).Scan(&p.ID, &p.Name, &p.RootPath, &p.CreatedAt, &p.UpdatedAt)
+	err := s.DB.QueryRowContext(ctx, `SELECT id,name,root_path,created_at,updated_at,COALESCE(graph_built_at,'') FROM projects WHERE name=?`, name).Scan(&p.ID, &p.Name, &p.RootPath, &p.CreatedAt, &p.UpdatedAt, &p.GraphBuiltAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, fmt.Errorf("project %q not found", name)
 	}
 	return p, err
+}
+
+func (s *Store) ProjectByPath(ctx context.Context, absPath string) (Project, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,root_path,created_at,updated_at,COALESCE(graph_built_at,'') FROM projects ORDER BY length(root_path) DESC`)
+	if err != nil {
+		return Project{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.Name, &p.RootPath, &p.CreatedAt, &p.UpdatedAt, &p.GraphBuiltAt); err != nil {
+			return Project{}, err
+		}
+		if p.RootPath == absPath || strings.HasPrefix(absPath, p.RootPath+string(filepath.Separator)) {
+			return p, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return Project{}, err
+	}
+	return Project{}, fmt.Errorf("no project registered at path %q", absPath)
+}
+
+func (s *Store) SetGraphBuiltAt(ctx context.Context, projectID int64, t time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE projects SET graph_built_at=? WHERE id=?`, t.UTC().Format(time.RFC3339), projectID)
+	return err
 }
 
 func (s *Store) UpsertFile(ctx context.Context, f FileRecord) (int64, error) {
