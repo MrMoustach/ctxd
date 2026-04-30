@@ -1,0 +1,12 @@
+ctxd
+
+.ctxd/
+.codex/
+.claude/
+.vscode/
+.mcp.json
+
+.DS_Store
+coverage/
+*.cover
+*.test
