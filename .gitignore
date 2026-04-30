@@ -8,5 +8,6 @@ ctxd
 
 .DS_Store
 coverage/
+dist/
 *.cover
 *.test

@@ -6,6 +6,43 @@ It stays local: no LLM calls, no embeddings, no cloud APIs, and no background se
 
 ## Install
 
+macOS/Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MrMoustach/ctxd/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/MrMoustach/ctxd/main/install.ps1 | iex
+```
+
+Install a specific version by setting `CTXD_VERSION`, for example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MrMoustach/ctxd/main/install.sh | CTXD_VERSION=v0.1.0 sh
+```
+
+```powershell
+$env:CTXD_VERSION = "v0.1.0"; irm https://raw.githubusercontent.com/MrMoustach/ctxd/main/install.ps1 | iex
+```
+
+The installers download the matching GitHub Release archive, verify it against `checksums.txt`, and install `ctxd` into:
+
+- macOS/Linux: `/usr/local/bin` when writable, otherwise `$HOME/.local/bin`
+- Windows: `%LOCALAPPDATA%\ctxd\bin`
+
+Override the install directory with `CTXD_INSTALL_DIR`.
+
+Manual downloads are available from GitHub Releases:
+
+```txt
+https://github.com/MrMoustach/ctxd/releases
+```
+
+Build from source:
+
 ```bash
 go build -o ctxd .
 ```
@@ -15,11 +52,11 @@ Set `CTX_DB=/path/to/ctx.db` to choose a database location. By default, `ctxd` s
 ## Quick Start
 
 ```bash
-./ctxd init
-./ctxd add /path/to/project --name pms
-./ctxd index pms
-./ctxd graph build pms
-./ctxd context pms "implement checkout anomaly detection" --graph-depth 2 --max-tokens 12000
+ctxd init
+ctxd add /path/to/project --name pms
+ctxd index pms
+ctxd graph build pms
+ctxd context pms "implement checkout anomaly detection" --graph-depth 2 --max-tokens 12000
 ```
 
 `ctxd index` keeps the FTS, file, chunk, symbol, and import indexes current. `ctxd graph build` rebuilds graph nodes and edges for the project without deleting FTS data.
@@ -27,16 +64,16 @@ Set `CTX_DB=/path/to/ctx.db` to choose a database location. By default, `ctxd` s
 ## Commands
 
 ```bash
-./ctxd setup /path/to/project --name pms --agents claude,codex
-./ctxd init
-./ctxd add /path/to/project --name pms
-./ctxd projects
-./ctxd index pms
-./ctxd search pms "where is payment handled?" --limit 10
-./ctxd context pms "implement checkout anomaly detection" --graph-depth 2 --max-tokens 12000
-./ctxd serve --mcp
-./ctxd install all
-./ctxd doctor
+ctxd setup /path/to/project --name pms --agents claude,codex
+ctxd init
+ctxd add /path/to/project --name pms
+ctxd projects
+ctxd index pms
+ctxd search pms "where is payment handled?" --limit 10
+ctxd context pms "implement checkout anomaly detection" --graph-depth 2 --max-tokens 12000
+ctxd serve --mcp
+ctxd install all
+ctxd doctor
 ```
 
 Most human-facing commands support `--json` where useful.
@@ -54,13 +91,13 @@ The graph layer adds:
 Supported source languages include PHP, JavaScript, TypeScript, and Go, with fallback symbol extraction for other indexed text languages.
 
 ```bash
-./ctxd graph build pms
-./ctxd graph stats pms
-./ctxd graph report pms
-./ctxd graph export pms --format json
-./ctxd graph export pms --format html
-./ctxd graph neighbors pms UserController
-./ctxd graph path pms "GET /users" UserController.index
+ctxd graph build pms
+ctxd graph stats pms
+ctxd graph report pms
+ctxd graph export pms --format json
+ctxd graph export pms --format html
+ctxd graph neighbors pms UserController
+ctxd graph path pms "GET /users" UserController.index
 ```
 
 Generated graph files are written under the project:
@@ -74,9 +111,9 @@ Generated graph files are written under the project:
 `ctxd context` uses FTS seeds first, then graph data when available. Graph expansion is enabled by default if the project has graph nodes.
 
 ```bash
-./ctxd context pms "change reservation cancellation flow"
-./ctxd context pms "change reservation cancellation flow" --graph
-./ctxd context pms "change reservation cancellation flow" --graph-depth 2 --max-tokens 8000
+ctxd context pms "change reservation cancellation flow"
+ctxd context pms "change reservation cancellation flow" --graph
+ctxd context pms "change reservation cancellation flow" --graph-depth 2 --max-tokens 8000
 ```
 
 Context output includes direct matches, graph-expanded related files, relevant symbols, call/import relationships, and snippets.
@@ -86,7 +123,7 @@ Context output includes direct matches, graph-expanded related files, relevant s
 Start the MCP stdio server:
 
 ```bash
-./ctxd serve --mcp
+ctxd serve --mcp
 ```
 
 Exposed MCP tools:
@@ -111,11 +148,11 @@ Compatibility aliases are still available for older configs: `list_projects`, `s
 The installer commands register the absolute path of the current `ctxd` binary with MCP config for each agent and update local instruction files.
 
 ```bash
-./ctxd install claude
-./ctxd install codex
-./ctxd install copilot
-./ctxd install antigravity
-./ctxd install all
+ctxd install claude
+ctxd install codex
+ctxd install copilot
+ctxd install antigravity
+ctxd install all
 ```
 
 Targets:
@@ -150,8 +187,19 @@ args = ["serve", "--mcp"]
 ## Doctor
 
 ```bash
-./ctxd doctor
+ctxd doctor
 ```
+
+## Releasing
+
+Releases are built by GoReleaser when a version tag is pushed:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The GitHub Actions workflow publishes macOS, Linux, and Windows archives plus `checksums.txt`.
 
 Doctor checks the resolved binary path, `serve --mcp`, graph tables, project graph data, MCP config files, local instruction policies, global Claude/Codex instruction files, and Claude CLI availability.
 
