@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,99 +14,190 @@ import (
 	"github.com/issam/ctxd/internal/store"
 )
 
-func Rebuild(ctx context.Context, st *store.Store, project store.Project) (Stats, error) {
-	tx, err := st.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return Stats{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE project_id=?`, project.ID); err != nil {
-		tx.Rollback()
-		return Stats{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM graph_nodes WHERE project_id=?`, project.ID); err != nil {
-		tx.Rollback()
-		return Stats{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Stats{}, err
-	}
+type edgeCache struct {
+	Imports []string `json:"i,omitempty"`
+	Calls   []Call   `json:"c,omitempty"`
+	Routes  []Route  `json:"r,omitempty"`
+	Uses    []Use    `json:"u,omitempty"`
+}
 
+func Rebuild(ctx context.Context, st *store.Store, project store.Project) (Stats, error) {
 	files, err := indexedFiles(ctx, st, project.ID)
 	if err != nil {
 		return Stats{}, err
 	}
-	nodesByKey := map[string]Node{}
-	var parsed []ParsedFile
-	for _, f := range files {
-		b, err := os.ReadFile(f.AbsPath)
-		if err != nil {
-			continue
+
+	hasGraph := project.GraphBuiltAt != "" && HasGraphData(ctx, st, project.ID)
+
+	type workItem struct {
+		file    store.FileRecord
+		changed bool
+	}
+	items := make([]workItem, len(files))
+	anyChanged := !hasGraph
+	for i, f := range files {
+		changed := !hasGraph || f.IndexedAt > project.GraphBuiltAt
+		items[i] = workItem{f, changed}
+		if changed {
+			anyChanged = true
 		}
-		pf := ParseFile(f.Path, f.Language, string(b))
-		parsed = append(parsed, pf)
-		for _, n := range pf.Nodes {
-			id, err := insertNode(ctx, st, project.ID, n)
-			if err != nil {
+	}
+	if !anyChanged {
+		return ProjectStats(ctx, st, project)
+	}
+
+	tx, err := st.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return Stats{}, err
+	}
+
+	// Always rebuild all edges; only delete nodes for changed files.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM graph_edges WHERE project_id=?`, project.ID); err != nil {
+		tx.Rollback()
+		return Stats{}, err
+	}
+	for _, w := range items {
+		if w.changed {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM graph_nodes WHERE project_id=? AND file_path=?`, project.ID, w.file.Path); err != nil {
+				tx.Rollback()
 				return Stats{}, err
-			}
-			n.ID = id
-			nodesByKey[nodeKey(n)] = n
-			if n.Type != "file" {
-				if fileNode, ok := nodesByKey["file:"+n.FilePath]; ok {
-					_ = insertEdge(ctx, st, project.ID, fileNode.ID, n.ID, "defines", 1, "")
-				}
 			}
 		}
 	}
-	for _, pf := range parsed {
-		fileNode, ok := nodesByKey["file:"+pf.Path]
+
+	nodesByKey := map[string]Node{}
+	edgesByPath := map[string]edgeCache{}
+
+	for _, w := range items {
+		if !w.changed {
+			// Load existing nodes from DB (not deleted).
+			rows, err := st.DB.QueryContext(ctx, `SELECT id,project_id,type,name,COALESCE(qualified_name,''),file_path,COALESCE(start_line,0),COALESCE(end_line,0),COALESCE(metadata_json,'') FROM graph_nodes WHERE project_id=? AND file_path=?`, project.ID, w.file.Path)
+			if err != nil {
+				tx.Rollback()
+				return Stats{}, err
+			}
+			for rows.Next() {
+				var n Node
+				if err := rows.Scan(&n.ID, &n.ProjectID, &n.Type, &n.Name, &n.QualifiedName, &n.FilePath, &n.StartLine, &n.EndLine, &n.MetadataJSON); err != nil {
+					rows.Close()
+					tx.Rollback()
+					return Stats{}, err
+				}
+				nodesByKey[nodeKey(n)] = n
+			}
+			rows.Close()
+
+			// Load edge data from parse cache.
+			var cachedHash, cachedData string
+			cacheHit := st.DB.QueryRowContext(ctx, `SELECT hash,data FROM graph_parsed WHERE project_id=? AND file_id=?`, project.ID, w.file.ID).Scan(&cachedHash, &cachedData) == nil && cachedHash == w.file.Hash
+			if cacheHit {
+				var ec edgeCache
+				if json.Unmarshal([]byte(cachedData), &ec) == nil {
+					edgesByPath[w.file.Path] = ec
+					continue
+				}
+			}
+			// Cache miss: re-read and parse once to warm cache.
+			b, rerr := os.ReadFile(w.file.AbsPath)
+			if rerr != nil {
+				continue
+			}
+			pf := ParseFile(w.file.Path, w.file.Language, string(b))
+			ec := edgeCache{Imports: pf.Imports, Calls: pf.Calls, Routes: pf.Routes, Uses: pf.Uses}
+			edgesByPath[w.file.Path] = ec
+			if data, jerr := json.Marshal(ec); jerr == nil {
+				_, _ = tx.ExecContext(ctx, `INSERT INTO graph_parsed(project_id,file_id,hash,data) VALUES(?,?,?,?) ON CONFLICT(project_id,file_id) DO UPDATE SET hash=excluded.hash,data=excluded.data`, project.ID, w.file.ID, w.file.Hash, string(data))
+			}
+		} else {
+			// Parse changed file, insert fresh nodes.
+			b, rerr := os.ReadFile(w.file.AbsPath)
+			if rerr != nil {
+				continue
+			}
+			pf := ParseFile(w.file.Path, w.file.Language, string(b))
+			for _, n := range pf.Nodes {
+				id, ierr := insertNodeTx(ctx, tx, project.ID, n)
+				if ierr != nil {
+					tx.Rollback()
+					return Stats{}, ierr
+				}
+				n.ID = id
+				nodesByKey[nodeKey(n)] = n
+			}
+			ec := edgeCache{Imports: pf.Imports, Calls: pf.Calls, Routes: pf.Routes, Uses: pf.Uses}
+			edgesByPath[w.file.Path] = ec
+			if data, jerr := json.Marshal(ec); jerr == nil {
+				_, _ = tx.ExecContext(ctx, `INSERT INTO graph_parsed(project_id,file_id,hash,data) VALUES(?,?,?,?) ON CONFLICT(project_id,file_id) DO UPDATE SET hash=excluded.hash,data=excluded.data`, project.ID, w.file.ID, w.file.Hash, string(data))
+			}
+		}
+	}
+
+	// Rebuild defines edges for all non-file nodes already in nodesByKey.
+	// (Route nodes from changed files are inserted below and get their defines edge there.)
+	for _, n := range nodesByKey {
+		if n.Type != "file" {
+			if fileNode, ok := nodesByKey["file:"+n.FilePath]; ok {
+				_ = insertEdgeTx(ctx, tx, project.ID, fileNode.ID, n.ID, "defines", 1, "")
+			}
+		}
+	}
+
+	// Rebuild all cross-file edges.
+	for filePath, ec := range edgesByPath {
+		fileNode, ok := nodesByKey["file:"+filePath]
 		if !ok {
 			continue
 		}
-		for _, imported := range pf.Imports {
+		for _, imported := range ec.Imports {
 			if to := resolveImport(nodesByKey, imported); to.ID != 0 {
-				_ = insertEdge(ctx, st, project.ID, fileNode.ID, to.ID, "imports", 0.8, meta("import", imported))
+				_ = insertEdgeTx(ctx, tx, project.ID, fileNode.ID, to.ID, "imports", 0.8, meta("import", imported))
 			}
 		}
-		for _, r := range pf.Routes {
-			routeNode := Node{Type: "route", Name: r.Method + " " + r.URI, QualifiedName: r.Method + " " + r.URI, FilePath: pf.Path, StartLine: r.Line, EndLine: r.Line, MetadataJSON: meta("route", r.Raw)}
-			id, err := insertNode(ctx, st, project.ID, routeNode)
-			if err != nil {
-				return Stats{}, err
+		for _, r := range ec.Routes {
+			routeNode := Node{Type: "route", Name: r.Method + " " + r.URI, QualifiedName: r.Method + " " + r.URI, FilePath: filePath, StartLine: r.Line, EndLine: r.Line, MetadataJSON: meta("route", r.Raw)}
+			rk := nodeKey(routeNode)
+			if existing, exists := nodesByKey[rk]; exists {
+				routeNode = existing
+			} else {
+				id, ierr := insertNodeTx(ctx, tx, project.ID, routeNode)
+				if ierr != nil {
+					tx.Rollback()
+					return Stats{}, ierr
+				}
+				routeNode.ID = id
+				nodesByKey[rk] = routeNode
+				_ = insertEdgeTx(ctx, tx, project.ID, fileNode.ID, routeNode.ID, "defines", 1, "")
 			}
-			routeNode.ID = id
-			nodesByKey[nodeKey(routeNode)] = routeNode
-			_ = insertEdge(ctx, st, project.ID, fileNode.ID, id, "defines", 1, "")
 			target := r.Controller + "." + r.Action
 			if to := resolveSymbol(nodesByKey, target, r.Action); to.ID != 0 {
-				_ = insertEdge(ctx, st, project.ID, id, to.ID, "route_to", 1, meta("controller", target))
+				_ = insertEdgeTx(ctx, tx, project.ID, routeNode.ID, to.ID, "route_to", 1, meta("controller", target))
 			}
 		}
-		for _, c := range pf.Calls {
+		for _, c := range ec.Calls {
 			from := resolveSymbol(nodesByKey, c.FromName, "")
 			if from.ID == 0 {
 				from = fileNode
 			}
 			if to := resolveSymbol(nodesByKey, c.ToName, c.ToName); to.ID != 0 && to.ID != from.ID {
-				_ = insertEdge(ctx, st, project.ID, from.ID, to.ID, "calls", 0.65, meta("call", c.Raw))
+				_ = insertEdgeTx(ctx, tx, project.ID, from.ID, to.ID, "calls", 0.65, meta("call", c.Raw))
 			}
 		}
-		for _, u := range pf.Uses {
+		for _, u := range ec.Uses {
 			from := resolveSymbol(nodesByKey, u.FromName, "")
 			if from.ID == 0 {
 				from = fileNode
 			}
 			if to := resolveSymbol(nodesByKey, u.ToName, u.ToName); to.ID != 0 && to.ID != from.ID {
-				_ = insertEdge(ctx, st, project.ID, from.ID, to.ID, u.Type, 0.8, meta("raw", u.Raw))
+				_ = insertEdgeTx(ctx, tx, project.ID, from.ID, to.ID, u.Type, 0.8, meta("raw", u.Raw))
 			}
 		}
 	}
-	stats, err := ProjectStats(ctx, st, project)
-	if err != nil {
-		return stats, err
+
+	if err := tx.Commit(); err != nil {
+		return Stats{}, err
 	}
 	_ = st.SetGraphBuiltAt(ctx, project.ID, time.Now())
-	return stats, nil
+	return ProjectStats(ctx, st, project)
 }
 
 func HasGraphData(ctx context.Context, st *store.Store, projectID int64) bool {
@@ -264,20 +356,20 @@ func FindNode(ctx context.Context, st *store.Store, projectID int64, q string) (
 	return n, err
 }
 
-func insertNode(ctx context.Context, st *store.Store, projectID int64, n Node) (int64, error) {
+func insertNodeTx(ctx context.Context, tx *sql.Tx, projectID int64, n Node) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := st.DB.ExecContext(ctx, `INSERT INTO graph_nodes(project_id,type,name,qualified_name,file_path,start_line,end_line,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, projectID, n.Type, n.Name, n.QualifiedName, n.FilePath, n.StartLine, n.EndLine, n.MetadataJSON, now, now)
+	res, err := tx.ExecContext(ctx, `INSERT INTO graph_nodes(project_id,type,name,qualified_name,file_path,start_line,end_line,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, projectID, n.Type, n.Name, n.QualifiedName, n.FilePath, n.StartLine, n.EndLine, n.MetadataJSON, now, now)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-func insertEdge(ctx context.Context, st *store.Store, projectID, fromID, toID int64, typ string, confidence float64, meta string) error {
+func insertEdgeTx(ctx context.Context, tx *sql.Tx, projectID, fromID, toID int64, typ string, confidence float64, meta string) error {
 	if fromID == 0 || toID == 0 || fromID == toID {
 		return nil
 	}
-	_, err := st.DB.ExecContext(ctx, `INSERT INTO graph_edges(project_id,from_node_id,to_node_id,type,confidence,metadata_json) VALUES(?,?,?,?,?,?)`, projectID, fromID, toID, typ, confidence, meta)
+	_, err := tx.ExecContext(ctx, `INSERT INTO graph_edges(project_id,from_node_id,to_node_id,type,confidence,metadata_json) VALUES(?,?,?,?,?,?)`, projectID, fromID, toID, typ, confidence, meta)
 	return err
 }
 

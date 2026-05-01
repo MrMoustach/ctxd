@@ -92,6 +92,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_graph_edges_project_to ON graph_edges(project_id, to_node_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_graph_edges_project_type ON graph_edges(project_id, type)`,
 		`CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, project TEXT NOT NULL DEFAULT '', called_at TEXT NOT NULL, tokens_without INTEGER NOT NULL, tokens_actual INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS graph_parsed (project_id INTEGER NOT NULL, file_id INTEGER NOT NULL, hash TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(project_id,file_id), FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE, FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.DB.ExecContext(ctx, stmt); err != nil {
@@ -100,6 +101,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	// Best-effort schema upgrades for existing databases.
 	_, _ = s.DB.ExecContext(ctx, `ALTER TABLE projects ADD COLUMN graph_built_at TEXT`)
+	_, _ = s.DB.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS graph_parsed (project_id INTEGER NOT NULL, file_id INTEGER NOT NULL, hash TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(project_id,file_id), FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE, FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE)`)
 	return nil
 }
 

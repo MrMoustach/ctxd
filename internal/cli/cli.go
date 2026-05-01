@@ -127,11 +127,13 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		r, err := indexer.IndexProject(ctx, st, p)
-		if err == nil {
-			fmt.Fprintf(stdout, "indexed %d files, %d chunks\n", r.IndexedFiles, r.IndexedChunks)
-		}
 		if err != nil {
 			return err
+		}
+		fmt.Fprintf(stdout, "indexed %d files, %d chunks\n", r.IndexedFiles, r.IndexedChunks)
+		if r.ChangedFiles == 0 && graph.HasGraphData(ctx, st, p.ID) {
+			fmt.Fprintf(stdout, "graph up to date\n")
+			return nil
 		}
 		gs, gErr := graph.Rebuild(ctx, st, p)
 		if gErr == nil {
@@ -488,12 +490,16 @@ func runSetup(ctx context.Context, stdout io.Writer, path, name string, agents [
 	}
 	fmt.Fprintf(stdout, "indexed %d files, %d chunks\n", r.IndexedFiles, r.IndexedChunks)
 
-	// Step 4: build graph
-	gs, gErr := graph.Rebuild(ctx, st, p)
-	if gErr != nil {
-		return fmt.Errorf("graph: %w", gErr)
+	// Step 4: build graph only when files actually changed or graph is missing
+	if r.ChangedFiles > 0 || !graph.HasGraphData(ctx, st, p.ID) {
+		gs, gErr := graph.Rebuild(ctx, st, p)
+		if gErr != nil {
+			return fmt.Errorf("graph: %w", gErr)
+		}
+		fmt.Fprintf(stdout, "built graph: %d symbols, %d edges\n", gs.Symbols, gs.Edges)
+	} else {
+		fmt.Fprintf(stdout, "graph up to date\n")
 	}
-	fmt.Fprintf(stdout, "built graph: %d symbols, %d edges\n", gs.Symbols, gs.Edges)
 
 	// Step 5: install agents
 	if len(agents) > 0 {

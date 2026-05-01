@@ -19,6 +19,7 @@ import (
 type Result struct {
 	IndexedFiles  int `json:"indexed_files"`
 	IndexedChunks int `json:"indexed_chunks"`
+	ChangedFiles  int `json:"changed_files"`
 }
 
 func IndexProject(ctx context.Context, st *store.Store, project store.Project) (Result, error) {
@@ -50,6 +51,13 @@ func IndexProject(ctx context.Context, st *store.Store, project store.Project) (
 		if err != nil || info.Size() > 1_500_000 {
 			return err
 		}
+		currMtime := info.ModTime().UTC().Format(time.RFC3339)
+		var storedMtime, storedHash string
+		_ = st.DB.QueryRowContext(ctx, `SELECT mtime, hash FROM files WHERE project_id=? AND path=?`, project.ID, rel).Scan(&storedMtime, &storedHash)
+		if storedMtime != "" && storedMtime == currMtime {
+			res.IndexedFiles++
+			return nil
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -58,8 +66,14 @@ func IndexProject(ctx context.Context, st *store.Store, project store.Project) (
 			return nil
 		}
 		sum := sha256.Sum256(b)
+		hash := hex.EncodeToString(sum[:])
+		if storedHash != "" && storedHash == hash {
+			_, _ = st.DB.ExecContext(ctx, `UPDATE files SET mtime=? WHERE project_id=? AND path=?`, currMtime, project.ID, rel)
+			res.IndexedFiles++
+			return nil
+		}
 		now := time.Now().UTC().Format(time.RFC3339)
-		fileID, err := st.UpsertFile(ctx, store.FileRecord{ProjectID: project.ID, Path: rel, AbsPath: path, Language: lang, SizeBytes: info.Size(), MTime: info.ModTime().UTC().Format(time.RFC3339), Hash: hex.EncodeToString(sum[:]), IndexedAt: now})
+		fileID, err := st.UpsertFile(ctx, store.FileRecord{ProjectID: project.ID, Path: rel, AbsPath: path, Language: lang, SizeBytes: info.Size(), MTime: currMtime, Hash: hash, IndexedAt: now})
 		if err != nil {
 			return err
 		}
@@ -77,6 +91,7 @@ func IndexProject(ctx context.Context, st *store.Store, project store.Project) (
 			_ = st.InsertImport(ctx, project.ID, fileID, im.Path, im.Raw)
 		}
 		res.IndexedFiles++
+		res.ChangedFiles++
 		return nil
 	})
 	return res, err
