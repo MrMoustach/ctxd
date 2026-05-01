@@ -25,22 +25,30 @@ Do not rely only on visible editor context unless ctxd is unavailable.
 If ` + "`ctxd_context`" + ` output contains a graph staleness warning, call ` + "`ctxd_graph_rebuild`" + ` followed by ` + "`reindex_project`" + ` before proceeding. After large merges, refactors, or file renames, always rebuild: ` + "`ctxd_graph_rebuild`" + ` then ` + "`reindex_project`" + `.
 `
 
-// UpdateInstructions appends the ctxd policy section to path if not already present.
-func UpdateInstructions(path string) error {
+// UpdateInstructions upserts the ctxd policy section in path.
+// Returns (true, nil) when the file was written, (false, nil) when already up to date.
+func UpdateInstructions(path string) (bool, error) {
 	content := ""
 	if data, err := os.ReadFile(path); err == nil {
 		content = string(data)
 	}
-	if strings.Contains(content, policyMarker) {
-		return nil
+	var next string
+	if idx := strings.Index(content, policyMarker); idx != -1 {
+		// Replace existing section with current policy.
+		next = content[:idx] + strings.TrimLeft(policySection, "\n")
+	} else {
+		if content != "" && !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		next = content + policySection
+	}
+	if next == content {
+		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
 	}
-	if content != "" && !strings.HasSuffix(content, "\n") {
-		content += "\n"
-	}
-	return atomicWrite(path, []byte(content+policySection))
+	return true, atomicWrite(path, []byte(next))
 }
 
 // GlobalPaths returns the global instruction file paths for the given agent.

@@ -11,3 +11,5 @@ Use:
 - `ctxd_read_files` when exact file contents are needed
 
 Do not rely only on visible editor context unless ctxd is unavailable.
+
+If `ctxd_context` output contains a graph staleness warning, call `ctxd_graph_rebuild` followed by `reindex_project` before proceeding. After large merges, refactors, or file renames, always rebuild: `ctxd_graph_rebuild` then `reindex_project`.

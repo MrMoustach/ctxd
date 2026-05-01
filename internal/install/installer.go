@@ -54,20 +54,26 @@ func Run(target, binPath string, w io.Writer) error {
 
 func updateLocalInstructions(w io.Writer) {
 	for _, path := range []string{"CLAUDE.md", "AGENTS.md"} {
-		if err := UpdateInstructions(path); err != nil {
+		changed, err := UpdateInstructions(path)
+		if err != nil {
 			fmt.Fprintf(w, "  warning: could not update %s: %v\n", path, err)
-		} else {
+		} else if changed {
 			fmt.Fprintf(w, "updated %s\n", path)
+		} else {
+			fmt.Fprintf(w, "%s already up to date\n", path)
 		}
 	}
 }
 
 func updateGlobalInstructions(agent string, w io.Writer) {
 	for _, path := range GlobalPaths(agent) {
-		if err := UpdateInstructions(path); err != nil {
+		changed, err := UpdateInstructions(path)
+		if err != nil {
 			fmt.Fprintf(w, "  warning: could not update %s: %v\n", path, err)
-		} else {
+		} else if changed {
 			fmt.Fprintf(w, "updated %s\n", path)
+		} else {
+			fmt.Fprintf(w, "%s already up to date\n", path)
 		}
 	}
 }

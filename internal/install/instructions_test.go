@@ -9,11 +9,15 @@ import (
 
 func TestUpdateInstructionsIdempotentAndGraphAware(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "AGENTS.md")
-	if err := UpdateInstructions(path); err != nil {
+	if _, err := UpdateInstructions(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := UpdateInstructions(path); err != nil {
+	changed, err := UpdateInstructions(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if changed {
+		t.Fatal("second call should be idempotent (no change)")
 	}
 	data, _ := os.ReadFile(path)
 	s := string(data)
